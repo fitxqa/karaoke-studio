@@ -1,0 +1,13 @@
+{
+  "appId": "qa.fitx.karaokestudio",
+  "appName": "Karaoke Studio",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true,
+    "backgroundColor": "#000000"
+  }
+}

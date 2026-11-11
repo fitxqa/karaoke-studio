@@ -1,0 +1,21 @@
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  setup-exe:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build KaraokeStudio-Setup.exe
+        shell: cmd
+        run: build_windows\build.bat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KaraokeStudio-Setup
+          path: dist/KaraokeStudio-Setup.exe
+          compression-level: 0

@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Karaoke Studio</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎤</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Tamil:wght@500;700;800&family=Inter:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="style.css?v=1.4.0">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/"><span class="logo">🎤</span> Karaoke Studio</a>
+  <div class="spacer"></div>
+  <input id="search" class="search" type="search" placeholder="Search songs">
+  <button id="btnSettings" class="icon-btn" title="Settings">⚙</button>
+</header>
+
+<!-- LIBRARY -->
+<main id="viewLibrary" class="view">
+  <section class="addbar">
+    <input id="url" type="url" placeholder="Paste a YouTube link  (https://youtu.be/…)" autocomplete="off">
+    <select id="lang" title="Lyrics language">
+      <option value="ta" selected>Tamil</option>
+      <option value="auto">Auto-detect</option>
+      <option value="en">English</option>
+      <option value="ml">Malayalam</option>
+      <option value="hi">Hindi</option>
+      <option value="te">Telugu</option>
+      <option value="kn">Kannada</option>
+      <option value="ar">Arabic</option>
+    </select>
+    <button id="btnAdd" class="primary">✨ Make karaoke</button>
+    <label class="ghost file-btn">⬆ From file<input id="fileInput" type="file" accept=".mp3,.mp4,.m4a,.wav,.flac,.ogg,.mkv,.webm,.aac,.mov" hidden></label>
+  </section>
+  <div id="libError" class="banner error" hidden></div>
+  <div id="grid" class="grid"></div>
+  <div id="empty" class="empty" hidden>
+    <div class="empty-icon">🎶</div>
+    <p>No songs yet. Paste a YouTube link above to make your first karaoke.</p>
+  </div>
+</main>
+
+<!-- PLAYER -->
+<main id="viewPlayer" class="view player" hidden>
+  <div class="player-head">
+    <a href="#/" class="icon-btn" title="Back (Esc)">←</a>
+    <div class="titles"><div id="pTitle" class="p-title"></div><div id="pArtist" class="p-artist"></div></div>
+    <span id="pSource" class="chip" hidden></span>
+    <div id="modeSeg" class="seg" hidden>
+      <button data-mode="native">தமிழ்</button><button data-mode="both">Both</button><button data-mode="roman">Tanglish</button>
+    </div>
+    <button id="btnFix" class="ghost" title="Correct lyrics while the song plays"><span class="ic">🛠</span><span class="lb"> Fix lyrics</span></button>
+    <button id="btnEdit" class="ghost" title="Edit lyrics"><span class="ic">✎</span><span class="lb"> Edit lyrics</span></button>
+    <button id="btnShareKaraoke" class="ghost" title="Save the karaoke video with lyrics, share on WhatsApp or upload to YouTube"><span class="ic">📤</span><span class="lb"> Save &amp; share karaoke</span></button>
+    <button id="btnRecs" class="ghost" title="My recordings &amp; share"><span class="ic">🎬</span><span class="lb"> My recordings &amp; share</span></button>
+  </div>
+
+  <div class="stage" id="stage">
+    <video id="video" muted playsinline preload="auto"></video>
+    <div class="shade"></div>
+    <div id="lyrics" class="lyrics"></div>
+    <div id="recBadge" class="rec-badge" hidden><span class="dot"></span>REC <b id="liveScore">0</b></div>
+    <div id="stageMsg" class="stage-msg" hidden></div>
+    <button id="bigPlay" class="big-play" hidden>▶</button>
+    <aside id="fixPanel" class="fix-panel" hidden>
+      <div class="fix-head">
+        <b>Fix lyrics</b>
+        <span id="fixStatus" class="fix-status"></span>
+        <button id="fixClose" class="icon-btn" title="Close">✕</button>
+      </div>
+      <div class="fix-tip">Keep singing. Type to correct words. <b>⏱</b> = line starts now · <b>T</b> = next line starts now · <b>−/+</b> nudge · click a time to jump there.</div>
+      <div id="fixList" class="fix-list"></div>
+      <div class="fix-foot">
+        <button id="fixPaste" class="ghost">✨ Paste correct lyrics</button>
+        <button id="fixAdd" class="ghost">＋ Add line here</button>
+        <button id="fixBake" class="ghost" title="Move every line by the Lyrics timing value, then reset it to 0">Apply timing to all</button>
+      </div>
+    </aside>
+  </div>
+
+  <canvas id="pitch" class="pitch" height="110"></canvas>
+
+  <div class="controls">
+    <div class="seekrow">
+      <span id="tCur">0:00</span>
+      <input id="seek" type="range" min="0" max="1" step="0.01" value="0">
+      <span id="tDur">0:00</span>
+    </div>
+    <div class="btnrow">
+      <button id="btnPlay" class="round primary" title="Play / pause (Space)">▶</button>
+      <button id="btnBack5" class="icon-btn" title="Back 5 s (←)">⟲5</button>
+      <button id="btnFwd5" class="icon-btn" title="Forward 5 s (→)">5⟳</button>
+      <div class="group"><span>Key</span><button id="keyDown">−</button><b id="keyVal">0</b><button id="keyUp">+</button></div>
+      <div class="group"><span>Lyrics timing</span><button id="offDown" title="Lyrics earlier">«</button><b id="offVal">+0.0s</b><button id="offUp" title="Lyrics later">»</button></div>
+      <label class="switch" title="Play the original singer quietly to help you learn"><input id="guide" type="checkbox"><span></span>Original vocals</label>
+      <div class="spacer"></div>
+      <button id="btnSing" class="primary sing">🎤 Sing &amp; record</button>
+    </div>
+  </div>
+</main>
+
+<!-- LYRICS EDITOR -->
+<main id="viewEditor" class="view editor" hidden>
+  <div class="player-head">
+    <a id="edBack" class="icon-btn" title="Back">←</a>
+    <div class="titles"><div class="p-title">Edit lyrics</div><div id="edTitle" class="p-artist"></div></div>
+    <div class="spacer"></div>
+    <button id="edSave" class="primary">💾 Save</button>
+  </div>
+  <div id="edMain" class="ed-main">
+    <div class="ed-tools">
+      <select id="edLang">
+        <option value="ta">Tamil</option><option value="auto">Auto-detect</option><option value="en">English</option>
+        <option value="ml">Malayalam</option><option value="hi">Hindi</option><option value="te">Telugu</option>
+        <option value="kn">Kannada</option><option value="ar">Arabic</option>
+      </select>
+      <button id="edTap" class="ghost">☝ Tap along to time the lines</button>
+      <button id="edAI" class="ghost">🎧 AI: write lyrics from the vocals</button>
+      <button id="edPaste" class="primary">✨ Fix with correct lyrics from the web</button>
+      <button id="edOnline" class="ghost">🔎 Search online again</button>
+      <span id="edSpin" class="spinner" hidden></span>
+    </div>
+    <div id="edMsg" class="ed-msg" hidden></div>
+    <p class="hint">Format: <code>[mm:ss.xx] line</code> e.g. <code>[01:02.50]கண்ணே கலைமானே</code>.
+      Only have plain lyrics? Paste them one line per row and use <b>Tap along</b>: press Space as each line starts.</p>
+    <textarea id="edText" spellcheck="false" placeholder="Paste lyrics here"></textarea>
+  </div>
+  <div id="tapView" class="tap-view" hidden>
+    <div id="tapCount" class="tap-count"></div>
+    <div id="tapPrev" class="tap-prev"></div>
+    <div id="tapNext" class="tap-next"></div>
+    <div id="tapAfter" class="tap-after"></div>
+    <button id="tapBtn" class="primary tap-btn">☝ TAP when this line starts (Space)</button>
+    <div class="tap-tools"><button id="tapUndo" class="ghost">↶ Undo (Backspace)</button><button id="tapCancel" class="ghost">✕ Cancel (Esc)</button></div>
+  </div>
+</main>
+
+<!-- DIALOGS -->
+<dialog id="dlgSettings">
+  <h2>Settings</h2>
+  <label class="field">Mic delay: <b id="latVal"></b>
+    <input id="latency" type="range" min="0" max="500" step="10">
+    <small>If your recording sounds behind the music, or the score feels late, raise this. Bluetooth headsets need 200-350 ms.</small>
+  </label>
+  <div class="field">Lyrics
+    <div class="seg" id="setMode"><button data-mode="native">தமிழ் only</button><button data-mode="both">Both</button><button data-mode="roman">Tanglish only</button></div>
+  </div>
+  <label class="field">Lyrics size: <b id="sizeVal"></b>
+    <input id="lyrSize" type="range" min="0.6" max="1.8" step="0.1">
+  </label>
+  <div class="field">Colours
+    <div class="seg" id="setTheme"><button data-theme="orange">Orange &amp; black</button><button data-theme="light">White &amp; orange</button><button data-theme="blue">Classic blue</button></div>
+  </div>
+  <div class="field app-only">Your PC (Karaoke Studio server)
+    <input id="setServer" type="url" placeholder="http://192.168.1.10:8000" style="width:100%;margin-top:6px">
+    <input id="setKey" type="password" placeholder="API key (only if you set one)" style="width:100%;margin-top:6px">
+    <button id="setTest" class="ghost" style="margin-top:8px">Connect</button> <span id="setTestMsg" class="muted"></span>
+  </div>
+  <div class="field pc-only" id="phoneBox" hidden>Phone &amp; tablet app
+    <small>On the same Wi-Fi, open the Karaoke Studio app and enter:</small>
+    <div id="phoneAddr" class="addr"></div>
+  </div>
+  <p class="muted small" id="verLine">Karaoke Studio</p>
+  <div class="dlg-actions"><button class="primary" data-close>Done</button></div>
+</dialog>
+
+<dialog id="dlgServer">
+  <h2>🎤 Connect to your PC</h2>
+  <p class="muted">The app plays and records here; the heavy work (vocal removal, AI lyrics) runs in Karaoke Studio on your PC.
+    Start Karaoke Studio on the PC, keep the phone on the <b>same Wi-Fi</b>, and type the address shown in the black Karaoke Studio window
+    (or in Settings on the PC).</p>
+  <input id="srvAddr" type="url" inputmode="url" placeholder="192.168.1.10:8000" style="width:100%">
+  <input id="srvKey" type="password" placeholder="API key (leave empty if you didn't set one)" style="width:100%;margin-top:8px">
+  <div id="srvErr" class="err" hidden></div>
+  <div class="dlg-actions"><button id="srvGo" class="primary">Connect</button></div>
+</dialog>
+
+<dialog id="dlgLogin">
+  <h2>Enter your key</h2>
+  <p>This server is protected. Enter the <code>KARAOKE_API_KEY</code> from the server's <code>.env</code> file.</p>
+  <input id="loginKey" type="password" placeholder="API key" autocomplete="current-password">
+  <div id="loginErr" class="err" hidden>Wrong key</div>
+  <div class="dlg-actions"><button id="loginBtn" class="primary">Unlock</button></div>
+</dialog>
+
+<dialog id="dlgResult" class="result">
+  <h2>Your performance</h2>
+  <div id="resScoreBox">
+    <div id="resGrade" class="grade">A</div>
+    <div id="resScore" class="score-num">0 / 100</div>
+    <div id="resDetail" class="muted"></div>
+  </div>
+  <div id="resNoVoice" class="muted" hidden>No voice was recorded.</div>
+  <div id="resAudio" hidden><audio id="resPlayer" controls></audio>
+    <div class="share-row"><a id="resDownload" class="ghost btn" download>⬇ Save MP3</a><button id="resVideo" class="primary">🎬 Make video &amp; share</button></div></div>
+  <div id="resErr" class="err" hidden></div>
+  <div class="dlg-actions">
+    <button id="resDiscard" class="ghost">Discard</button>
+    <button id="resSave" class="primary">💾 Save recording</button>
+  </div>
+</dialog>
+
+<dialog id="dlgRecs">
+  <h2>My recordings</h2>
+  <p class="muted">Click 🎬 next to a recording to make a video and <b>save</b> it, share on <b>WhatsApp</b> or upload to <b>YouTube</b>.</p>
+  <audio id="recsPlayer" controls hidden></audio>
+  <div id="recsList" class="recs-list"></div>
+  <div class="dlg-actions"><button class="primary" data-close>Close</button></div>
+</dialog>
+
+<dialog id="dlgPaste" class="video-dlg">
+  <h2>✨ Fix lyrics with the correct words</h2>
+  <p class="muted">Copy the lyrics of this song from any website (Tamil or Tanglish) and paste them below.
+    Karaoke Studio listens to the singer's voice and times every word to it (1–3 minutes;
+    the very first time it downloads the voice-matching model, about 1.2 GB).
+    Lines like “Movie:”, “Singer:” and “Male :” are removed automatically.</p>
+  <textarea id="pasteText" rows="12" spellcheck="false" placeholder="Paste the full lyrics here, one line per row"></textarea>
+  <div id="pasteErr" class="err" hidden></div>
+  <div class="dlg-actions"><button class="ghost" data-close>Cancel</button><button id="pasteGo" class="primary">✨ Fix lyrics</button></div>
+</dialog>
+
+<dialog id="dlgVideo" class="video-dlg">
+  <h2 id="vidTitle">🎬 Share your performance</h2>
+  <div id="vidSetup">
+    <p class="muted" id="vidIntro">Makes an MP4 of the song video with your voice and the lyrics on screen.</p>
+    <label class="field">Your name, shown at the start (optional)
+      <input id="vidName" type="text" maxlength="40" placeholder="e.g. Muhsin">
+    </label>
+    <label class="switch"><input id="vidRoman" type="checkbox" checked><span></span>Show Tanglish under the Tamil</label>
+  </div>
+  <div id="vidProgress" hidden>
+    <div class="bar"><i id="vidBar"></i></div>
+    <div id="vidPct" class="muted">Making your video…</div>
+  </div>
+  <div id="vidReady" hidden>
+    <video id="vidPreview" controls playsinline preload="metadata"></video>
+    <div class="share-row">
+      <a id="vidSave" class="ghost btn" download>⬇ Save video</a>
+      <button id="vidWhats" class="share wa"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2zm0 18.2c-1.5 0-3-.4-4.2-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8-.2-.1-.4-.1-.6.1l-.8 1c-.1.2-.3.2-.5.1a6.7 6.7 0 0 1-3.3-2.9c-.3-.4.2-.4.7-1.4.1-.2 0-.3 0-.5l-.8-1.8c-.2-.5-.4-.4-.6-.4h-.5c-.2 0-.5.1-.7.3-.2.3-.9.9-.9 2.2s.9 2.5 1 2.7c.1.2 1.8 2.8 4.4 3.9 1.6.7 2.3.8 3.1.6.5-.1 1.5-.6 1.7-1.2.2-.6.2-1.1.2-1.2-.1-.1-.3-.2-.5-.3z"/></svg>WhatsApp</button>
+      <button id="vidYT" class="share yt">YouTube</button>
+    </div>
+    <button id="vidRedo" class="linkish">Make it again (change name / lyrics)</button>
+  </div>
+  <div id="vidErr" class="err" hidden></div>
+  <div class="dlg-actions"><button id="vidClose" class="ghost">Close</button><button id="vidMake" class="primary">🎬 Make video</button></div>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="config.js?v=1.4.0"></script>
+<script src="app.js?v=1.4.0" type="module"></script>
+</body>
+</html>

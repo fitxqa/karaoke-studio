@@ -1,0 +1,20 @@
+services:
+  karaoke:
+    build: .
+    env_file: .env
+    ports: ["8000:8000"]
+    volumes:
+      - ./data:/data
+      - ./models:/root/.cache   # keeps downloaded Demucs/Whisper models between restarts
+    restart: unless-stopped
+
+  # HTTPS (needed for the microphone when you open the app from another device).
+  # Set DOMAIN in .env to a domain pointing at this server, then: docker compose --profile https up -d
+  caddy:
+    image: caddy:2
+    profiles: ["https"]
+    command: caddy reverse-proxy --from ${DOMAIN} --to karaoke:8000
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./caddy:/data
+    restart: unless-stopped

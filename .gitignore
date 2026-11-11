@@ -1,0 +1,6 @@
+server/data/
+server/models/
+server/.venv/
+server/.env
+__pycache__/
+.pytest_cache/
