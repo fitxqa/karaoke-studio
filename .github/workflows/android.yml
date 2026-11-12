@@ -22,7 +22,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
-      - uses: android-actions/setup-android@v3
+      # The GitHub Ubuntu runner already has the Android SDK (ANDROID_HOME).
       - run: npm install
       - run: npm run web
       - name: Create Android project
