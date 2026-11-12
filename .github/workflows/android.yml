@@ -6,6 +6,9 @@ on:
     paths: ["android-app/**", "server/app/web/**", ".github/workflows/android.yml"]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -42,3 +45,19 @@ jobs:
         with:
           name: KaraokeStudio-apk
           path: android-app/KaraokeStudio.apk
+      - name: Publish APK to the "apk" branch
+        run: |
+          mkdir -p "$RUNNER_TEMP/apkbranch" && cd "$RUNNER_TEMP/apkbranch"
+          git init -q -b apk
+          cp "$GITHUB_WORKSPACE/android-app/KaraokeStudio.apk" .
+          echo "Karaoke Studio APK - build ${{ github.run_number }} ($(date -u +%F))" > README.md
+          git add . && git -c user.name="github-actions" -c user.email="actions@github.com" commit -qm "APK build ${{ github.run_number }}"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" apk
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-build-${{ github.run_number }}
+          name: Karaoke Studio Android (build ${{ github.run_number }})
+          body: Install KaraokeStudio.apk on your Android phone or tablet. Needs Karaoke Studio 1.4+ running on your PC.
+          files: android-app/KaraokeStudio.apk
+          make_latest: true
