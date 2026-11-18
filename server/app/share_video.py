@@ -128,8 +128,9 @@ def _render(job_dir: Path, rid: str, lyr: dict, title: str, singer: str | None, 
             offset: float) -> None:
     rec_dir = job_dir / "recordings"
     try:
-        if rid == KARAOKE_ID:  # whole song, karaoke music (no vocals)
-            audio = job_dir / "no_vocals.wav"
+        if rid.startswith(KARAOKE_ID):  # whole song: karaoke music (+ the duet partner's voice)
+            mixed = rec_dir / f"{rid}.wav"
+            audio = mixed if rid != KARAOKE_ID and mixed.exists() else job_dir / "no_vocals.wav"
             seg_start = 0.0
         else:
             info = json.loads((rec_dir / f"{rid}.json").read_text())

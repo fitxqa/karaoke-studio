@@ -1,7 +1,7 @@
-import { Engine } from './engine.js?v=1.4.0';
-import { PitchTrack, SingSession, grade, pitchDiff } from './pitch.js?v=1.4.0';
+import { Engine } from './engine.js?v=2.0.0';
+import { PitchTrack, SingSession, grade, pitchDiff } from './pitch.js?v=2.0.0';
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '2.0.0';
 const KS = window.KS || { isApp: false, U: (p) => p, plugins: {} };
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -88,15 +88,17 @@ function renderLibrary() {
   $('empty').hidden = shown.length > 0;
   $('grid').innerHTML = shown.map((s) => {
     const ready = s.status === 'done', failed = s.status === 'error';
-    const sub = [s.artist, LABEL[s.lyrics_source]].filter(Boolean).join(' · ');
+    const sub = [s.artist, s.duet ? '👫 Duet' : '', LABEL[s.lyrics_source]].filter(Boolean).join(' · ');
+    const best = s.best_score != null ? `<div class="s best">🏆 ${Math.round(s.best_score)}${s.best_singer ? ' · ' + esc(s.best_singer) : ''}</div>` : '';
     const thumb = s.status === 'queued' || s.status === 'downloading' ? '' : `style="background-image:url('${KS.U(`/songs/${s.id}/files/thumb.jpg`)}')"`;
     return `<div class="card ${ready ? 'ready' : ''}" data-id="${s.id}">
       <div class="thumb" ${thumb}>${thumb ? '' : '♪'}
         ${!ready && !failed ? `<div class="overlay"><span class="spinner"></span>${esc(s.progress)}</div>` : ''}
         ${failed ? `<div class="overlay fail">⚠ ${esc((s.error || 'Failed').slice(0, 400))}<button data-act="retry">↻ Retry</button></div>` : ''}
       </div>
-      <div class="meta"><div><div class="t" title="${esc(s.title)}">${esc(s.title)}</div><div class="s">${esc(sub)}</div></div>
-        ${ready || failed ? '<button class="icon-btn" data-act="delete" title="Delete">🗑</button>' : ''}</div>
+      <div class="meta"><div><div class="t" title="${esc(s.title)}">${esc(s.title)}</div><div class="s">${esc(sub)}</div>${best}</div>
+        <div class="acts">${ready ? '<button class="icon-btn q-add" data-act="queue" title="Add to party queue">＋🎉</button>' : ''}
+        ${ready || failed ? '<button class="icon-btn" data-act="delete" title="Delete">🗑</button>' : ''}</div></div>
     </div>`;
   }).join('');
 }
@@ -112,6 +114,7 @@ $('grid').onclick = async (e) => {
     try { await api(`/songs/${id}`, { method: 'DELETE' }); } catch (err) { toast(err.message); }
     return refreshLibrary();
   }
+  if (act === 'queue') return askAddQueue(id);
   if (act === 'retry') {
     try { await api(`/songs/${id}/retry`, { method: 'POST' }); } catch (err) { toast(err.message); }
     return refreshLibrary();
@@ -121,12 +124,100 @@ $('grid').onclick = async (e) => {
 
 $('search').oninput = renderLibrary;
 
+// ------------------------------------------------------------------ party queue
+
+const party = { on: false, singer: null, autoplay: false, items: [], timer: null };
+
+async function loadQueue() {
+  try { party.items = await api('/queue'); } catch { /* old server */ }
+  $('queueCount').textContent = party.items.length;
+}
+async function saveQueue() {
+  try { party.items = await api('/queue', json('PUT', { items: party.items })); } catch (e) { toast(e.message); }
+  $('queueCount').textContent = party.items.length;
+  if ($('dlgQueue').open) renderQueue();
+}
+let aqSongId = null;
+function askAddQueue(id) {
+  aqSongId = id;
+  $('aqSong').textContent = songs.find((x) => x.id === id)?.title || '';
+  $('aqName').value = '';
+  $('dlgAddQueue').showModal();
+  $('aqName').focus();
+}
+$('aqGo').onclick = async () => {
+  await loadQueue();
+  party.items.push({ song_id: aqSongId, singer: $('aqName').value.trim() || null });
+  $('dlgAddQueue').close();
+  await saveQueue();
+  toast(`Added to the party queue (#${party.items.length}).`);
+};
+$('aqName').onkeydown = (e) => { if (e.key === 'Enter') $('aqGo').click(); };
+function renderQueue() {
+  $('queueList').innerHTML = party.items.length ? party.items.map((q, i) => {
+    const sg = songs.find((x) => x.id === q.song_id);
+    return `<div class="q-item" data-i="${i}"><span class="n">${i + 1}</span>
+      <div class="t"><div>${esc(sg?.title || 'Song removed')}</div><div class="muted">${esc(q.singer || 'Anyone')}</div></div>
+      <button class="ghost" data-act="up" title="Move up" ${i ? '' : 'disabled'}>↑</button>
+      <button class="ghost" data-act="rm" title="Remove">✕</button></div>`;
+  }).join('') : '<p class="muted" style="padding:10px">Nobody in the queue yet. Press ＋🎉 on a song to add a singer.</p>';
+  $('queueStart').disabled = !party.items.length;
+}
+$('btnQueue').onclick = async () => { await loadQueue(); renderQueue(); $('dlgQueue').showModal(); };
+$('queueList').onclick = (e) => {
+  const b = e.target.closest('button[data-act]');
+  if (!b) return;
+  const i = +b.closest('.q-item').dataset.i;
+  if (b.dataset.act === 'rm') party.items.splice(i, 1);
+  if (b.dataset.act === 'up' && i > 0) [party.items[i - 1], party.items[i]] = [party.items[i], party.items[i - 1]];
+  saveQueue();
+};
+$('queueClear').onclick = () => { party.items = []; saveQueue(); };
+$('queueStart').onclick = () => { $('dlgQueue').close(); party.on = true; playNextInQueue(); };
+
+async function playNextInQueue() {
+  await loadQueue();
+  const q = party.items.shift();
+  if (!q) { party.on = false; toast('🎉 That was the last song in the party queue!', 5000); return; }
+  await saveQueue();
+  party.singer = q.singer;
+  party.autoplay = true;
+  if (q.singer) toast(`🎤 Now singing: ${q.singer}`, 4000);
+  if (location.hash === `#/play/${q.song_id}`) { closeSong(); route(); } else location.hash = `#/play/${q.song_id}`;
+}
+/** After a song ends in a party: show who is next and start it after a countdown. */
+function showNextUp() {
+  if (!party.on) return;
+  const q = party.items[0];
+  if (!q) { party.on = false; toast('🎉 Party queue finished!', 5000); return; }
+  const sg = songs.find((x) => x.id === q.song_id);
+  let n = 10;
+  const box = $('nextUp');
+  const draw = () => {
+    box.innerHTML = `<div class="muted">Next up</div><div class="big">${esc(sg?.title || 'Next song')}</div>
+      <div class="who">🎤 ${esc(q.singer || 'Anyone')}</div><div>Starting in ${n}…</div>
+      <div class="row"><button class="primary" data-act="go">▶ Start now</button><button class="ghost" data-act="stop">Stop party</button></div>`;
+  };
+  draw();
+  box.hidden = false;
+  clearInterval(party.timer);
+  party.timer = setInterval(() => { n -= 1; if (n <= 0) { hideNextUp(); playNextInQueue(); } else draw(); }, 1000);
+}
+function hideNextUp() { clearInterval(party.timer); $('nextUp').hidden = true; }
+$('nextUp').onclick = (e) => {
+  const a = e.target.closest('[data-act]')?.dataset.act;
+  if (a === 'go') { hideNextUp(); playNextInQueue(); }
+  if (a === 'stop') { hideNextUp(); party.on = false; }
+};
+loadQueue();
+
+
 $('btnAdd').onclick = async () => {
   const url = $('url').value.trim();
   if (!url) return $('url').focus();
   $('btnAdd').disabled = true;
   try {
-    await api('/songs', json('POST', { url, language: $('lang').value }));
+    await api('/songs', json('POST', { url, language: $('lang').value, quality: $('quality').value }));
     $('url').value = '';
     toast('Added — making the karaoke now. This takes a few minutes.');
     refreshLibrary();
@@ -140,6 +231,7 @@ $('fileInput').onchange = () => {
   const fd = new FormData();
   fd.append('file', file);
   fd.append('language', $('lang').value);
+  fd.append('quality', $('quality').value);
   const xhr = new XMLHttpRequest();
   xhr.open('POST', '/songs/upload');
   xhr.upload.onprogress = (e) => e.lengthComputable && toast(`Uploading… ${Math.round((e.loaded * 100) / e.total)}%`, 60000);
@@ -168,7 +260,14 @@ engine.onLoading = (msg) => {
   $('stageMsg').hidden = !msg;
   if (msg) $('stageMsg').innerHTML = `<span class="spinner"></span><div>${esc(msg)}</div>`;
 };
-engine.onEnded = () => { if (session) finishSinging(); updatePlayButton(); };
+engine.onEnded = () => {
+  if (session) finishSinging();
+  updatePlayButton();
+  if (party.on) {
+    if ($('dlgResult').open) $('dlgResult').addEventListener('close', showNextUp, { once: true });
+    else showNextUp();
+  }
+};
 
 async function openSong(id) {
   if (song?.id === id && engine.music) return; // already open (e.g. back from editor)
@@ -179,18 +278,23 @@ async function openSong(id) {
   $('pArtist').textContent = song.artist || '';
   offset = store.get('off.' + id, 0);
   const key = store.get('key.' + id, 0);
-  $('guide').checked = false;
+  $('optSpeed').value = '1';
   updateKeyOffset(key);
-  const [lyr, pitch] = await Promise.all([
+  const [lyr, pitch, du] = await Promise.all([
     api(`/songs/${id}/lyrics`).catch(() => ({ lines: [] })),
     api(`/songs/${id}/pitch`).catch(() => null),
+    api(`/songs/${id}/duet`).catch(() => ({ duet: false, solo: 'M', segments: [] })),
   ]);
+  duetInfo = du || { duet: false, solo: 'M', segments: [] };
+  myPart = duetInfo.duet ? store.get('part.' + id, 'M') : 'both';
+  engine.want.partner = partnerFor(myPart);
+  updatePartUI();
   setLyrics(lyr);
   ref = pitch ? new PitchTrack(pitch.hop, pitch.midi) : new PitchTrack();
   $('pitch').hidden = ref.midi.length === 0;
   $('video').src = KS.U(`/songs/${id}/files/karaoke.mp4`);
   try {
-    await engine.load(id, key);
+    await engine.load(id, key, 1);
   } catch (e) {
     engine.onLoading(null);
     $('stageMsg').hidden = false;
@@ -201,9 +305,11 @@ async function openSong(id) {
   $('tDur').textContent = fmt(engine.duration);
   $('bigPlay').hidden = false;
   updatePlayButton();
+  if (party.on && party.autoplay) { party.autoplay = false; await engine.play(); updatePlayButton(); }
 }
 
 function closeSong() {
+  hideNextUp();
   if (fixOpen) closeFix(); else flushFix();
   if (session) { session.cancel(); session = null; }
   engine.stop();
@@ -229,7 +335,8 @@ function updateKeyOffset(key = engine.key) {
   const locked = !!session;
   $('keyDown').disabled = locked || key <= -6;
   $('keyUp').disabled = locked || key >= 6;
-  $('guide').disabled = locked;
+  $('optSpeed').disabled = locked;
+  document.querySelectorAll('#partSeg button').forEach((b) => (b.disabled = locked));
 }
 
 function updatePlayButton() {
@@ -284,11 +391,117 @@ $('keyDown').onclick = () => changeKey(-1);
 $('keyUp').onclick = () => changeKey(1);
 $('offDown').onclick = () => changeOffset(-0.1);
 $('offUp').onclick = () => changeOffset(0.1);
-$('guide').onchange = async () => {
+// ------------------------------------------------------------------ duet + options
+
+let duetInfo = { duet: false, solo: 'M', segments: [] };
+let myPart = 'both'; // M / F / both
+
+function partnerFor(part) { return part === 'M' ? 'female' : part === 'F' ? 'male' : null; }
+
+/** M / F / B for a lyric line: a hand-set tag wins, otherwise what the voice analysis heard. */
+function lineSinger(line) {
+  if (!line) return null;
+  if (['M', 'F', 'B'].includes(line.singer)) return line.singer;
+  let m = 0, f = 0;
+  for (const sg of duetInfo.segments || []) {
+    const ov = Math.min(line.end, sg.end) - Math.max(line.start, sg.start);
+    if (ov > 0) { if (sg.singer === 'M') m += ov; else f += ov; }
+  }
+  if (m + f === 0) return duetInfo.solo || 'M';
+  return m >= 0.75 * (m + f) ? 'M' : f >= 0.75 * (m + f) ? 'F' : 'B';
+}
+function singerAt(t) {
+  const i = lineAt(t);
+  const l = lyrics.lines[i];
+  if (l && t <= l.end + 0.3) return lineSinger(l);
+  const sg = (duetInfo.segments || []).find((x) => t >= x.start && t <= x.end);
+  return sg ? sg.singer : null;
+}
+function updatePartUI() {
+  $('partSeg').hidden = !duetInfo.duet;
+  document.querySelectorAll('#partSeg button').forEach((b) => b.classList.toggle('on', b.dataset.part === myPart));
+  $('optPartnerBox').hidden = !(duetInfo.duet && myPart !== 'both');
+  lyricsModeKey = '';
+}
+document.querySelectorAll('#partSeg button').forEach((b) => {
+  b.onclick = async () => {
+    if (!song || session || busy || b.dataset.part === myPart) return;
+    myPart = b.dataset.part;
+    store.set('part.' + song.id, myPart);
+    updatePartUI();
+    busy = true;
+    try { await engine.setPartner(partnerFor(myPart)); } catch (e) { toast(e.message); }
+    busy = false;
+    updatePlayButton();
+    toast(myPart === 'both' ? 'You sing every line — all singers removed.'
+      : `You sing the ${myPart === 'M' ? 'male' : 'female'} part. The ${myPart === 'M' ? 'female' : 'male'} singer sings with you.`, 4000);
+  };
+});
+
+$('btnOpts').onclick = () => {
+  $('optsPanel').hidden = !$('optsPanel').hidden;
+  $('btnOpts').classList.toggle('on', !$('optsPanel').hidden);
+};
+$('optSpeed').onchange = async () => {
+  if (!song || busy) return;
+  const v = +$('optSpeed').value;
   busy = true;
-  try { await engine.setGuide($('guide').checked); } catch (e) { toast(e.message); $('guide').checked = false; }
+  try { await engine.setSpeed(v); toast(v === 1 ? 'Normal speed' : `Practice speed ${Math.round(v * 100)}% — the pitch stays the same.`, 3000); }
+  catch (e) { toast(e.message); }
+  busy = false;
+  $('seek').max = engine.duration;
+  updatePlayButton();
+};
+function guideLabel(v) { return v ? `${v}% (singer softly)` : 'Off'; }
+$('optGuide').value = store.get('guide', 0);
+$('optGuideVal').textContent = guideLabel(+$('optGuide').value);
+engine.want.guide = (+$('optGuide').value) / 100;
+$('optGuide').oninput = () => {
+  const v = +$('optGuide').value;
+  $('optGuideVal').textContent = guideLabel(v);
+  if (engine.ctx) engine.gains.guide.gain.setTargetAtTime(v / 100, engine.ctx.currentTime, 0.05);
+};
+$('optGuide').onchange = async () => {
+  const v = +$('optGuide').value;
+  store.set('guide', v);
+  busy = true;
+  try { await engine.setGuideVolume(v / 100); } catch (e) { toast(e.message); }
   busy = false;
   updatePlayButton();
+};
+$('optPartner').value = store.get('partnerVol', 90);
+$('optPartnerVal').textContent = `${$('optPartner').value}%`;
+engine.want.partnerVol = (+$('optPartner').value) / 100;
+$('optPartner').oninput = () => {
+  const v = +$('optPartner').value;
+  $('optPartnerVal').textContent = `${v}%`;
+  engine.setPartnerVolume(v / 100);
+  store.set('partnerVol', v);
+};
+$('optEffect').value = store.get('effect', 'studio');
+$('optEffect').onchange = () => store.set('effect', $('optEffect').value);
+
+// TV mode: video + big lyrics, controls appear when you move the mouse / tap
+let tvTimer = null;
+function setTV(on) {
+  document.body.classList.toggle('tv', on);
+  if (on) document.documentElement.requestFullscreen?.().catch(() => {});
+  else if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+  lyricsModeKey = '';
+}
+$('optTV').onclick = (e) => { e.preventDefault(); setTV(!document.body.classList.contains('tv')); };
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && document.body.classList.contains('tv')) setTV(false); });
+['mousemove', 'touchstart'].forEach((ev) => document.addEventListener(ev, () => {
+  if (!document.body.classList.contains('tv')) return;
+  document.body.classList.add('tv-show');
+  clearTimeout(tvTimer);
+  tvTimer = setTimeout(() => document.body.classList.remove('tv-show'), 3000);
+}, { passive: true }));
+
+// Skip the instrumental intro
+$('skipIntro').onclick = () => {
+  const first = lyrics.lines[0];
+  if (first) seekTo(Math.max(0, first.start + offset - 3));
 };
 let seeking = false;
 $('seek').oninput = () => { seeking = true; $('tCur').textContent = fmt(+$('seek').value); };
@@ -321,7 +534,7 @@ function renderLyrics(t) {
   const singing = idx >= 0 && t <= L[idx].end + 0.3;
   const big = singing ? idx : idx + 1;
   const mode = settings.mode;
-  const key = `${big}|${mode}`;
+  const key = `${big}|${mode}|${myPart}|${duetInfo.duet}`;
   if (key !== lyricsModeKey) {
     lyricsModeKey = key;
     lyricsIdx = big;
@@ -337,7 +550,16 @@ function renderLyrics(t) {
         ? (cur ? words.map((w, i) => `<span class="w" data-i="${i}">${esc(w.text)}</span>`).join(' ') : esc(line.text))
         : '';
       const roman = showRoman ? `<div class="roman ${cur ? 'w' : ''}">${esc(line.roman)}</div>` : '';
-      return `<div class="line ${cur ? 'cur' : 'nxt'} ${showNative ? '' : 'solo-roman'}">${native}${roman}</div>`;
+      let tag = '';
+      let sing = '';
+      if (duetInfo.duet) {
+        const who = lineSinger(line);
+        sing = `sing-${who}`;
+        const mine = myPart !== 'both' && (who === myPart || who === 'B');
+        const name = who === 'M' ? 'MALE' : who === 'F' ? 'FEMALE' : 'BOTH';
+        if (cur) tag = `<div><span class="tag ${who} ${mine ? 'you' : ''}">${mine ? 'YOU · ' : ''}${name}</span></div>`;
+      }
+      return `<div class="line ${cur ? 'cur' : 'nxt'} ${sing} ${showNative ? '' : 'solo-roman'}">${tag}${native}${roman}</div>`;
     };
     box.innerHTML = `<div class="dots"></div>${lineHtml(curLine, true)}${lineHtml(next, false)}`;
     wordEls = [...box.querySelectorAll('.cur > span.w')];
@@ -433,6 +655,8 @@ function tick() {
     drawPitch(t);
     if (!seeking) { $('seek').value = t; $('tCur').textContent = fmt(t); }
     if (session) $('liveScore').textContent = ref.midi.length ? Math.round(session.score) : '';
+    const first = lyrics.lines[0];
+    $('skipIntro').hidden = !(first && engine.playing && !session && t - offset < first.start - 6);
   } else if (song && !$('viewEditor').hidden && tapLines.length) {
     engine.syncVideo();
   }
@@ -443,10 +667,20 @@ requestAnimationFrame(frame);
 
 async function startSinging() {
   if (!engine.music || session || busy) return;
-  if ($('guide').checked) { $('guide').checked = false; await engine.setGuide(false); }
+  if (engine.speed !== 1) {
+    toast('Recording uses normal speed — switching back to 100%.', 3500);
+    $('optSpeed').value = '1';
+    busy = true;
+    try { await engine.setSpeed(1); } finally { busy = false; }
+  }
   engine.ensureCtx();
   await engine.ctx.resume();
-  const s = new SingSession({ engine, reference: ref, semitones: engine.key, delayMs: settings.delay });
+  const part = duetInfo.duet ? myPart : 'both';
+  const s = new SingSession({
+    engine, reference: ref, semitones: engine.key, delayMs: settings.delay,
+    // in a duet only your lines (and the ones you sing together) count
+    filter: part === 'both' ? null : (t) => { const w = singerAt(t - offset); return w === null || w === part || w === 'B'; },
+  });
   try {
     await s.start();
   } catch (e) {
@@ -491,6 +725,13 @@ function finishSinging() {
   $('resGrade').textContent = grade(s.score);
   $('resScore').textContent = `${Math.round(s.score)} / 100`;
   $('resDetail').textContent = `Perfect notes: ${s.perfect}   Good: ${s.good}`;
+  const prevBest = song.best_score;
+  $('resBest').hidden = !melody;
+  $('resBest').textContent = prevBest == null || s.score > prevBest
+    ? '🏆 New high score for this song!'
+    : `High score: ${Math.round(prevBest)}${song.best_singer ? ' by ' + song.best_singer : ''}`;
+  $('resName').value = party.on && party.singer ? party.singer : store.get('singer', '');
+  $('resNameBox').hidden = !wav;
   $('resNoVoice').hidden = !!wav;
   $('resAudio').hidden = true;
   $('resErr').hidden = true;
@@ -512,9 +753,14 @@ $('resSave').onclick = async () => {
   fd.append('song_start', take.songStart.toFixed(3));
   fd.append('semitones', take.key);
   fd.append('latency_ms', 0); // already corrected in the browser
+  fd.append('effect', $('optEffect').value);
+  if (duetInfo.duet && myPart !== 'both') { fd.append('part', myPart); fd.append('partner_gain', (+$('optPartner').value) / 100); }
+  const name = $('resName').value.trim();
+  if (name) { fd.append('singer', name); if (!party.on) store.set('singer', name); }
   if (ref.midi.length) fd.append('score', take.score.toFixed(1));
   try {
     const r = await api(`/songs/${song.id}/recordings`, { method: 'POST', body: fd });
+    api(`/songs/${song.id}`).then((m) => { if (song && m.id === song.id) { song.best_score = m.best_score; song.best_singer = m.best_singer; } }).catch(() => {});
     const url = KS.U(`/songs/${song.id}/recordings/${r.id}.mp3`);
     take.recId = r.id;
     $('resPlayer').src = url;
@@ -828,6 +1074,7 @@ function fixChanged({ rerender = true } = {}) {
   fixTimer = setTimeout(saveFix, 1200);
 }
 
+let singerChanged = false;
 function renderFixList() {
   const L = lyrics.lines;
   $('fixList').innerHTML = L.length ? L.map((l, i) => `<div class="fix-row" data-i="${i}">
@@ -835,6 +1082,7 @@ function renderFixList() {
       <button class="sm" data-act="minus" title="0.1 s earlier">−</button>
       <button class="sm" data-act="plus" title="0.1 s later">+</button>
       <button class="sm" data-act="now" title="This line starts now">⏱</button>
+      ${duetInfo.duet ? `<button class="who ${lineSinger(l)} ${l.singer ? '' : 'auto'}" data-act="who" title="Who sings this line? (tap: Male / Female / Both)">${lineSinger(l)}</button>` : ''}
       <input value="${esc(l.text)}" spellcheck="false" placeholder="type the words">
       <button class="sm del" data-act="del" title="Delete line">✕</button></div>`).join('')
     : '<p class="muted" style="padding:14px">No lyrics yet. Play the song, press “＋ Add line here” as each line starts, then type the words.</p>';
@@ -872,7 +1120,7 @@ async function saveFix() {
   const songId = song.id;
   const payload = {
     language: lyrics.language || null,
-    lines: lyrics.lines.map((l) => ({ start: l.start, text: l.text, words: l._edited ? null : l.words })),
+    lines: lyrics.lines.map((l) => ({ start: l.start, text: l.text, words: l._edited ? null : l.words, singer: l.singer || null })),
   };
   try {
     const saved = await api(`/songs/${songId}/lyrics/lines`, json('PUT', payload));
@@ -884,6 +1132,11 @@ async function saveFix() {
         if (fixOpen) renderFixList();
       }
       setFixStatus('Saved ✓', 'ok');
+      if (singerChanged && duetInfo.duet) {
+        singerChanged = false;
+        api(`/songs/${songId}/duet`).then((d) => { duetInfo = d; }).catch(() => {});
+        if (engine.want.partner) engine.refreshPartner().catch((e) => toast(e.message));
+      }
     }
   } catch (e) {
     setFixStatus(e.message, 'err');
@@ -918,6 +1171,13 @@ $('fixList').onclick = (e) => {
   if (act === 'plus') setLineStart(line, line.start + 0.1);
   if (act === 'now') setLineStart(line, lyrT() - REACTION);
   if (act === 'del') lyrics.lines.splice(lyrics.lines.indexOf(line), 1);
+  if (act === 'who') {
+    const order = ['M', 'F', 'B'];
+    line.singer = order[(order.indexOf(lineSinger(line)) + 1) % 3];
+    singerChanged = true;
+    renderFixList();
+    lyricsModeKey = '';
+  }
   btn.blur();
   fixChanged();
 };
@@ -983,7 +1243,7 @@ async function openVideo(songId, recId) {
   $('vidName').value = store.get('singer', '');
   $('vidRoman').checked = store.get('vidRoman', true);
   $('vidRoman').closest('label').hidden = !lyrics.lines.some((l) => l.roman);
-  const isKaraoke = recId === 'karaoke';
+  const isKaraoke = recId.startsWith('karaoke');
   $('vidTitle').textContent = isKaraoke ? '📤 Save & share the karaoke' : '🎬 Share your performance';
   $('vidIntro').textContent = isKaraoke
     ? 'Makes an HD MP4 of the whole song: karaoke music (no singer) with the lyrics on screen, so others can sing along.'
@@ -1038,7 +1298,7 @@ function vidPoll() {
 function vidUrl() { return KS.U(`/songs/${vid.songId}/recordings/${vid.recId}.mp4`); }
 function vidFileName() {
   const s = songs.find((x) => x.id === vid.songId) || song || {};
-  return vid.recId === 'karaoke' ? `${safeName(s.title)} - karaoke.mp4` : `${safeName(s.title)} - my singing.mp4`;
+  return vid.recId.startsWith('karaoke') ? `${safeName(s.title)} - karaoke.mp4` : `${safeName(s.title)} - my singing.mp4`;
 }
 
 function vidReady() {
@@ -1091,7 +1351,7 @@ async function nativeShare(url, filename, text) {
 function shareText() {
   const s = song || songs.find((x) => x.id === vid?.songId) || {};
   const who = store.get('singer', '');
-  if (vid?.recId === 'karaoke') return `🎤 Karaoke: ${s.title || 'song'} — sing along! (made with Karaoke Studio)`;
+  if (vid?.recId.startsWith('karaoke')) return `🎤 Karaoke: ${s.title || 'song'} — sing along! (made with Karaoke Studio)`;
   return `🎤 ${who ? who + ' sings ' : ''}${s.title || 'a song'} — made with Karaoke Studio`;
 }
 
@@ -1139,7 +1399,7 @@ $('btnShareKaraoke').onclick = () => {
   if (session) cancelSinging();
   engine.pause();
   updatePlayButton();
-  openVideo(song.id, 'karaoke');
+  openVideo(song.id, duetInfo.duet && myPart !== 'both' ? `karaoke-${myPart}` : 'karaoke');
 };
 
 // ------------------------------------------------------------------ fix lyrics with correct text from the web

@@ -8,7 +8,7 @@ from app import jobs, lyrics, media
 
 def test_full_pipeline_with_upload(monkeypatch, tmp_path):
     """Runs the real pipeline on an uploaded audio file, with Demucs/LRCLIB/Whisper stubbed."""
-    def fake_separate(wav, out_dir):
+    def fake_separate(wav, out_dir, quality=None):
         v, m = out_dir / "vocals.wav", out_dir / "no_vocals.wav"
         shutil.copy(wav, v)
         shutil.copy(wav, m)

@@ -100,18 +100,23 @@ def make_thumbnail(src: Path, jpg: Path) -> None:
 
 # ---------------------------------------------------------------- vocal removal
 
-def separate(wav: Path, out_dir: Path) -> tuple[Path, Path]:
-    """Demucs two-stem split. Returns (vocals.wav, no_vocals.wav)."""
-    run([sys.executable, "-m", "demucs", "--two-stems=vocals", "-n", config.DEMUCS_MODEL,
+QUALITY_MODELS = {"fast": "htdemucs", "best": "htdemucs_ft"}
+
+
+def separate(wav: Path, out_dir: Path, quality: str | None = None) -> tuple[Path, Path]:
+    """Demucs two-stem split. Returns (vocals.wav, no_vocals.wav).
+    quality: "fast" (htdemucs) or "best" (htdemucs_ft, cleaner, ~4x slower); default from config."""
+    model = QUALITY_MODELS.get(quality or "", config.DEMUCS_MODEL)
+    run([sys.executable, "-m", "demucs", "--two-stems=vocals", "-n", model,
          "-j", str(config.DEMUCS_JOBS), "-o", str(out_dir), str(wav)])
-    stem_dir = out_dir / config.DEMUCS_MODEL / wav.stem
+    stem_dir = out_dir / model / wav.stem
     vocals, music = stem_dir / "vocals.wav", stem_dir / "no_vocals.wav"
     if not vocals.exists() or not music.exists():
         raise RuntimeError("Demucs did not produce stems")
     final_v, final_m = out_dir / "vocals.wav", out_dir / "no_vocals.wav"
     shutil.move(str(vocals), final_v)
     shutil.move(str(music), final_m)
-    shutil.rmtree(out_dir / config.DEMUCS_MODEL, ignore_errors=True)
+    shutil.rmtree(out_dir / model, ignore_errors=True)
     return final_v, final_m
 
 
@@ -138,27 +143,55 @@ def mux_karaoke(video_src: Path | None, music: Path, original: Path, out: Path) 
 
 # ---------------------------------------------------------------- recording mix
 
+EFFECTS = {
+    "none": "",
+    "studio": "aecho=0.8:0.7:28|46:0.14|0.09,",
+    "hall": "aecho=0.8:0.85:60|120|190:0.28|0.2|0.14,",
+    "echo": "aecho=0.8:0.9:320|640:0.32|0.16,",
+}
+
+
 def mix_recording(music: Path, voice: Path, out: Path, *, song_start: float, semitones: float,
-                  latency_ms: float, voice_gain: float = 1.6, music_gain: float = 0.8) -> None:
+                  latency_ms: float, voice_gain: float = 1.6, music_gain: float = 0.8,
+                  effect: str = "studio", partner: Path | None = None, partner_gain: float = 0.9) -> None:
     """Mix the user's voice over the (key-shifted) karaoke track -> MP3.
 
     voice sample 0 was captured while the song was at `song_start` seconds; the mic chain
     lags by `latency_ms`, so the matching music starts at song_start - latency.
+    partner: the duet partner's vocal track (same timeline as the music), mixed in under the voice.
     """
     music_start = max(0.0, song_start - latency_ms / 1000.0)
     ratio = 2 ** (semitones / 12.0)
     pitch_f = ""
     if abs(semitones) > 1e-3:
         # pitch shift without tempo change, plain ffmpeg (no rubberband needed)
-        pitch_f = f"asetrate={44100 * ratio:.3f},aresample=44100,atempo={1 / ratio:.6f},"
-    flt = (
-        f"[0:a]aresample=44100,{pitch_f}volume={music_gain}[m];"
-        f"[1:a]aresample=44100,highpass=f=80,acompressor=threshold=0.1:ratio=3,"
-        f"volume={voice_gain},aecho=0.8:0.6:40:0.12[v];"
-        f"[m][v]amix=inputs=2:duration=shortest:normalize=0,alimiter=limit=0.95[out]"
-    )
-    run([config.FFMPEG, "-y", "-ss", f"{music_start:.3f}", "-i", str(music), "-i", str(voice),
-         "-filter_complex", flt, "-map", "[out]", "-c:a", "libmp3lame", "-q:a", "2", str(out)])
+        pitch_f = f"asetrate={44100 * ratio:.3f},aresample=44100,{_atempo(1 / ratio)},"
+    fx = EFFECTS.get(effect, EFFECTS["studio"])
+    inputs = ["-ss", f"{music_start:.3f}", "-i", str(music), "-i", str(voice)]
+    if partner is not None:
+        inputs += ["-ss", f"{music_start:.3f}", "-i", str(partner)]
+        flt = (f"[0:a]aresample=44100,volume={music_gain}[m0];[2:a]aresample=44100,volume={partner_gain}[p];"
+               f"[m0][p]amix=inputs=2:duration=first:normalize=0,{pitch_f}anull[m];")
+    else:
+        flt = f"[0:a]aresample=44100,{pitch_f}volume={music_gain}[m];"
+    flt += (f"[1:a]aresample=44100,highpass=f=80,acompressor=threshold=0.1:ratio=3,"
+            f"volume={voice_gain},{fx}anull[v];"
+            f"[m][v]amix=inputs=2:duration=shortest:normalize=0,alimiter=limit=0.95[out]")
+    run([config.FFMPEG, "-y", *inputs, "-filter_complex", flt, "-map", "[out]",
+         "-c:a", "libmp3lame", "-q:a", "2", str(out)])
+
+
+def _atempo(f: float) -> str:
+    """ffmpeg atempo accepts 0.5-2.0 per stage; chain stages for anything outside."""
+    parts = []
+    while f < 0.5:
+        parts.append("atempo=0.5")
+        f /= 0.5
+    while f > 2.0:
+        parts.append("atempo=2.0")
+        f /= 2.0
+    parts.append(f"atempo={f:.6f}")
+    return ",".join(parts)
 
 
 # ---------------------------------------------------------------- key-shifted audio for the web player
@@ -175,19 +208,21 @@ def has_rubberband() -> bool:
     return _HAS_RUBBERBAND
 
 
-def shifted_audio(src: Path, out: Path, semitones: int) -> Path:
-    """AAC copy of `src` moved by `semitones` (tempo unchanged). Cached on disk."""
+def shifted_audio(src: Path, out: Path, semitones: int, speed: float = 1.0) -> Path:
+    """AAC copy of `src` moved by `semitones` and played at `speed` (pitch kept). Cached on disk."""
     if out.exists() and out.stat().st_size > 0:
         return out
     ratio = 2 ** (semitones / 12.0)
-    if semitones == 0:
+    if semitones == 0 and abs(speed - 1) < 1e-3:
         flt = "anull"
     elif has_rubberband():  # best quality
-        flt = f"rubberband=pitch={ratio:.6f}:pitchq=quality:formant=preserved"
+        flt = f"rubberband=pitch={ratio:.6f}:tempo={speed:.4f}:pitchq=quality:formant=preserved"
+    elif semitones == 0:
+        flt = _atempo(speed)
     else:
-        flt = f"asetrate={44100 * ratio:.3f},aresample=44100,atempo={1 / ratio:.6f}"
+        flt = f"asetrate={44100 * ratio:.3f},aresample=44100,{_atempo(speed / ratio)}"
     tmp = out.with_suffix(".tmp.m4a")
     run([config.FFMPEG, "-y", "-i", str(src), "-af", f"aresample=44100,{flt}", "-ac", "2",
-         "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(tmp)])
+         "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(tmp)])
     tmp.replace(out)
     return out

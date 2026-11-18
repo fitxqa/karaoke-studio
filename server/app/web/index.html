@@ -7,12 +7,13 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎤</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Tamil:wght@500;700;800&family=Inter:wght@400;500;600;700;800&display=swap">
-<link rel="stylesheet" href="style.css?v=1.4.0">
+<link rel="stylesheet" href="style.css?v=2.0.0">
 </head>
 <body>
 <header class="topbar">
   <a class="brand" href="#/"><span class="logo">🎤</span> Karaoke Studio</a>
   <div class="spacer"></div>
+  <button id="btnQueue" class="queue-pill" title="Party queue">🎉 Party queue <b id="queueCount">0</b></button>
   <input id="search" class="search" type="search" placeholder="Search songs">
   <button id="btnSettings" class="icon-btn" title="Settings">⚙</button>
 </header>
@@ -31,6 +32,10 @@
       <option value="kn">Kannada</option>
       <option value="ar">Arabic</option>
     </select>
+    <select id="quality" title="Vocal removal quality">
+      <option value="fast" selected>Fast</option>
+      <option value="best">Best quality (slower)</option>
+    </select>
     <button id="btnAdd" class="primary">✨ Make karaoke</button>
     <label class="ghost file-btn">⬆ From file<input id="fileInput" type="file" accept=".mp3,.mp4,.m4a,.wav,.flac,.ogg,.mkv,.webm,.aac,.mov" hidden></label>
   </section>
@@ -48,6 +53,9 @@
     <a href="#/" class="icon-btn" title="Back (Esc)">←</a>
     <div class="titles"><div id="pTitle" class="p-title"></div><div id="pArtist" class="p-artist"></div></div>
     <span id="pSource" class="chip" hidden></span>
+    <div id="partSeg" class="seg part-seg" hidden title="Duet: choose the part you sing">
+      <button data-part="M">♂ I sing male</button><button data-part="F">♀ Female</button><button data-part="both">Both</button>
+    </div>
     <div id="modeSeg" class="seg" hidden>
       <button data-mode="native">தமிழ்</button><button data-mode="both">Both</button><button data-mode="roman">Tanglish</button>
     </div>
@@ -64,6 +72,8 @@
     <div id="recBadge" class="rec-badge" hidden><span class="dot"></span>REC <b id="liveScore">0</b></div>
     <div id="stageMsg" class="stage-msg" hidden></div>
     <button id="bigPlay" class="big-play" hidden>▶</button>
+    <button id="skipIntro" class="skip-intro" hidden>⏭ Skip intro</button>
+    <div id="nextUp" class="next-up" hidden></div>
     <aside id="fixPanel" class="fix-panel" hidden>
       <div class="fix-head">
         <b>Fix lyrics</b>
@@ -94,9 +104,22 @@
       <button id="btnFwd5" class="icon-btn" title="Forward 5 s (→)">5⟳</button>
       <div class="group"><span>Key</span><button id="keyDown">−</button><b id="keyVal">0</b><button id="keyUp">+</button></div>
       <div class="group"><span>Lyrics timing</span><button id="offDown" title="Lyrics earlier">«</button><b id="offVal">+0.0s</b><button id="offUp" title="Lyrics later">»</button></div>
-      <label class="switch" title="Play the original singer quietly to help you learn"><input id="guide" type="checkbox"><span></span>Original vocals</label>
+      <button id="btnOpts" class="ghost opts-btn" title="Practice speed, guide vocals, duet partner, voice effect, TV mode">⚙ Options</button>
       <div class="spacer"></div>
       <button id="btnSing" class="primary sing">🎤 Sing &amp; record</button>
+    </div>
+    <div id="optsPanel" class="opts" hidden>
+      <label class="opt"><b>🎵 Practice speed</b>
+        <select id="optSpeed"><option value="1">100% (normal)</option><option value="0.9">90%</option><option value="0.8">80%</option><option value="0.7">70%</option><option value="0.6">60%</option><option value="0.5">50%</option></select>
+        <small>Slower, same pitch</small></label>
+      <label class="opt"><b>🔈 Guide vocals</b>
+        <input id="optGuide" type="range" min="0" max="60" step="5" value="0"><small id="optGuideVal">Off</small></label>
+      <label class="opt" id="optPartnerBox" hidden><b>👫 Partner volume</b>
+        <input id="optPartner" type="range" min="0" max="150" step="5" value="90"><small id="optPartnerVal">90%</small></label>
+      <label class="opt"><b>🌊 Voice effect</b>
+        <select id="optEffect"><option value="studio">Studio</option><option value="hall">Hall</option><option value="echo">Echo</option><option value="none">None</option></select>
+        <small>Used on your recordings</small></label>
+      <button class="opt opt-btn" id="optTV"><b>📺 TV mode</b><small>Big full screen</small></button>
     </div>
   </div>
 </main>
@@ -151,7 +174,7 @@
     <input id="lyrSize" type="range" min="0.6" max="1.8" step="0.1">
   </label>
   <div class="field">Colours
-    <div class="seg" id="setTheme"><button data-theme="orange">Orange &amp; black</button><button data-theme="light">White &amp; orange</button><button data-theme="blue">Classic blue</button></div>
+    <div class="seg" id="setTheme"><button data-theme="light">White &amp; orange</button><button data-theme="orange">Orange &amp; black</button><button data-theme="blue">Classic blue</button></div>
   </div>
   <div class="field app-only">Your PC (Karaoke Studio server)
     <input id="setServer" type="url" placeholder="http://192.168.1.10:8000" style="width:100%;margin-top:6px">
@@ -164,6 +187,26 @@
   </div>
   <p class="muted small" id="verLine">Karaoke Studio</p>
   <div class="dlg-actions"><button class="primary" data-close>Done</button></div>
+</dialog>
+
+<dialog id="dlgQueue" class="video-dlg">
+  <h2>🎉 Party queue</h2>
+  <p class="muted">Line up songs and singers. When a song ends, the next one starts by itself.</p>
+  <div id="queueList" class="queue-list"></div>
+  <div class="dlg-actions">
+    <button id="queueClear" class="ghost">Clear</button>
+    <button class="ghost" data-close>Close</button>
+    <button id="queueStart" class="primary">▶ Start party</button>
+  </div>
+</dialog>
+
+<dialog id="dlgAddQueue">
+  <h2>Add to party queue</h2>
+  <p id="aqSong" class="muted"></p>
+  <label class="field">Who sings?
+    <input id="aqName" type="text" maxlength="40" placeholder="Singer's name">
+  </label>
+  <div class="dlg-actions"><button class="ghost" data-close>Cancel</button><button id="aqGo" class="primary">Add</button></div>
 </dialog>
 
 <dialog id="dlgServer">
@@ -191,8 +234,12 @@
     <div id="resGrade" class="grade">A</div>
     <div id="resScore" class="score-num">0 / 100</div>
     <div id="resDetail" class="muted"></div>
+    <div id="resBest" class="best-line" hidden></div>
   </div>
   <div id="resNoVoice" class="muted" hidden>No voice was recorded.</div>
+  <label class="field" id="resNameBox">Your name (for high scores)
+    <input id="resName" type="text" maxlength="40" placeholder="e.g. Muhsin">
+  </label>
   <div id="resAudio" hidden><audio id="resPlayer" controls></audio>
     <div class="share-row"><a id="resDownload" class="ghost btn" download>⬇ Save MP3</a><button id="resVideo" class="primary">🎬 Make video &amp; share</button></div></div>
   <div id="resErr" class="err" hidden></div>
@@ -249,7 +296,7 @@
 
 <div id="toast" class="toast" hidden></div>
 
-<script src="config.js?v=1.4.0"></script>
-<script src="app.js?v=1.4.0" type="module"></script>
+<script src="config.js?v=2.0.0"></script>
+<script src="app.js?v=2.0.0" type="module"></script>
 </body>
 </html>

@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, jobs, lyrics, media, share_video
+from . import config, duet, jobs, lyrics, media, share_video
 
 
 @asynccontextmanager
@@ -28,7 +28,7 @@ async def lifespan(_app):
     yield
 
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "2.0.0"
 app = FastAPI(title="Karaoke Studio", version=APP_VERSION, lifespan=lifespan)
 
 
@@ -87,6 +87,7 @@ MEDIA_FILES = {"karaoke.mp4", "thumb.jpg", "no_vocals.wav", "vocals.wav"}
 class NewSong(BaseModel):
     url: str
     language: str = "auto"  # auto / ta / en / ml / hi ...
+    quality: str = "fast"  # fast / best (cleaner vocal removal, slower)
 
 
 class LyricsText(BaseModel):
@@ -98,6 +99,7 @@ class EditedLine(BaseModel):
     start: float
     text: str
     words: list[dict] | None = None
+    singer: str | None = None  # duet part set by hand: M / F / B
 
 
 class EditedLyrics(BaseModel):
@@ -106,6 +108,7 @@ class EditedLyrics(BaseModel):
 
 
 class VideoRequest(BaseModel):
+    part: str | None = None  # karaoke video for a duet part: M or F = the part YOU sing
     singer: str | None = None
     roman: bool = True
     offset: float = 0.0  # the player's "Lyrics timing" value for this song
@@ -163,19 +166,20 @@ def add_song(body: NewSong):
     url = body.url.strip()
     if not url.startswith(("http://", "https://")):
         raise HTTPException(400, "Paste a full YouTube link (https://...)")
-    meta = jobs.create(source_url=url, language=body.language)
+    meta = jobs.create(source_url=url, language=body.language, quality=body.quality)
     jobs.submit(meta["id"])
     return meta
 
 
 @app.post("/songs/upload", dependencies=[Depends(auth)])
 def upload_song(file: UploadFile = File(...), language: str = Form("auto"),
-                title: str | None = Form(None), artist: str | None = Form(None)):
+                title: str | None = Form(None), artist: str | None = Form(None),
+                quality: str = Form("fast")):
     ext = Path(file.filename or "").suffix.lower()
     if ext not in ALLOWED_UPLOADS:
         raise HTTPException(400, f"Unsupported file type {ext}")
     name = Path(file.filename).stem
-    meta = jobs.create(upload_name=name, language=language, title=title or name, artist=artist)
+    meta = jobs.create(upload_name=name, language=language, title=title or name, artist=artist, quality=quality)
     d = jobs.job_dir(meta["id"])
     with open(d / f"source{ext}", "wb") as out:
         shutil.copyfileobj(file.file, out)
@@ -222,25 +226,74 @@ def get_file(job_id: str, name: str):
 _audio_locks: dict[str, threading.Lock] = {}
 
 
-@app.get("/songs/{job_id}/audio/{kind}.m4a", dependencies=[Depends(auth)])
-def get_audio(job_id: str, kind: str, key: int = 0):
-    """Karaoke music (kind=music) or the singer's voice (kind=vocals), moved to another key."""
-    _job(job_id)
-    if kind not in ("music", "vocals") or not -12 <= key <= 12:
-        raise HTTPException(404, "No such audio")
+def _lyrics_of(job_id: str) -> dict:
+    p = jobs.job_dir(job_id) / "lyrics.json"
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {"lines": []}
+
+
+def _part_wav(job_id: str, keep: str) -> Path:
+    """Vocal track with only one singer (M or F) left in, following the current lyrics/corrections."""
     d = jobs.job_dir(job_id)
-    src = d / ("no_vocals.wav" if kind == "music" else "vocals.wav")
-    if not src.exists():
-        raise HTTPException(409, "Song is not processed yet")
-    out = d / "cache" / f"{kind}_k{key:+d}.m4a"
+    segs = duet.effective_segments(jobs.duet_info(job_id), _lyrics_of(job_id))
+    out = d / "cache" / f"part_{keep}_{duet.segments_hash(segs)}.wav"
     out.parent.mkdir(exist_ok=True)
     lock = _audio_locks.setdefault(str(out), threading.Lock())
-    with lock:  # two tabs asking for the same key render it once
+    with lock:
+        return duet.render_part(d / "vocals.wav", segs, keep, out)
+
+
+_audio_locks: dict[str, threading.Lock] = {}
+
+
+@app.get("/songs/{job_id}/audio/{kind}.m4a", dependencies=[Depends(auth)])
+def get_audio(job_id: str, kind: str, key: int = 0, speed: float = 1.0):
+    """music (no vocals), vocals (the singer), male / female (one duet singer only);
+    moved to another key and/or slowed down for practice (pitch kept)."""
+    _job(job_id)
+    if kind not in ("music", "vocals", "male", "female") or not -12 <= key <= 12:
+        raise HTTPException(404, "No such audio")
+    speed = round(max(0.5, min(1.25, speed)) * 20) / 20  # 5 % steps
+    d = jobs.job_dir(job_id)
+    if not (d / "vocals.wav").exists():
+        raise HTTPException(409, "Song is not processed yet")
+    if kind in ("male", "female"):
+        src = _part_wav(job_id, "M" if kind == "male" else "F")
+        tag = f"{kind}_{src.stem.split('_')[-1]}"
+    else:
+        src = d / ("no_vocals.wav" if kind == "music" else "vocals.wav")
+        tag = kind
+    out = d / "cache" / f"{tag}_k{key:+d}_s{int(speed * 100)}.m4a"
+    out.parent.mkdir(exist_ok=True)
+    lock = _audio_locks.setdefault(str(out), threading.Lock())
+    with lock:  # two tabs asking for the same version render it once
         try:
-            media.shifted_audio(src, out, key)
+            media.shifted_audio(src, out, key, speed)
         except RuntimeError as e:
-            raise HTTPException(500, f"Could not change key: {e}") from e
+            raise HTTPException(500, f"Could not prepare the audio: {e}") from e
     return FileResponse(out, media_type="audio/mp4")
+
+
+@app.get("/songs/{job_id}/duet", dependencies=[Depends(auth)])
+def get_duet(job_id: str):
+    """Who sings when: {"duet": bool, "solo": "M"|"F", "segments": [{start, end, singer}]}."""
+    _job(job_id)
+    if not (jobs.job_dir(job_id) / "pitch.json").exists():
+        return {"duet": False, "solo": "M", "segments": []}
+    return jobs.duet_info(job_id)
+
+
+class QueueBody(BaseModel):
+    items: list[dict]
+
+
+@app.get("/queue", dependencies=[Depends(auth)])
+def get_queue():
+    return jobs.get_queue()
+
+
+@app.put("/queue", dependencies=[Depends(auth)])
+def put_queue(body: QueueBody):
+    return jobs.set_queue(body.items)
 
 
 @app.get("/songs/{job_id}/lyrics", dependencies=[Depends(auth)])
@@ -319,7 +372,9 @@ def get_pitch(job_id: str):
 @app.post("/songs/{job_id}/recordings", dependencies=[Depends(auth)])
 def add_recording(job_id: str, voice: UploadFile = File(...), song_start: float = Form(0.0),
                   semitones: float = Form(0.0), latency_ms: float = Form(150.0),
-                  score: float | None = Form(None)):
+                  score: float | None = Form(None), effect: str = Form("studio"),
+                  part: str | None = Form(None), partner_gain: float = Form(0.9),
+                  singer: str | None = Form(None)):
     """Upload the singer's voice (WAV); returns an MP3 mixed with the karaoke track."""
     _job(job_id)
     d = jobs.job_dir(job_id)
@@ -334,14 +389,21 @@ def add_recording(job_id: str, voice: UploadFile = File(...), song_start: float 
         shutil.copyfileobj(voice.file, out)
     mp3 = rec_dir / f"{rid}.mp3"
     try:
+        partner = None
+        if part in ("M", "F") and (d / "pitch.json").exists():
+            partner = _part_wav(job_id, "F" if part == "M" else "M")  # the other singer keeps singing
         media.mix_recording(music, voice_path, mp3, song_start=song_start,
-                            semitones=max(-12.0, min(12.0, semitones)), latency_ms=latency_ms)
+                            semitones=max(-12.0, min(12.0, semitones)), latency_ms=latency_ms,
+                            effect=effect, partner=partner, partner_gain=max(0.0, min(1.5, partner_gain)))
     except RuntimeError as e:
         raise HTTPException(500, f"Mixing failed: {e}") from e
     info = {"id": rid, "song_start": song_start, "semitones": semitones, "score": score,
-            "latency_ms": latency_ms,
+            "latency_ms": latency_ms, "effect": effect, "part": part,
+            "singer": (singer or "").strip()[:40] or None,
             "created": time.time(), "file": mp3.name}
     (rec_dir / f"{rid}.json").write_text(json.dumps(info))
+    if score is not None:
+        jobs.add_score(job_id, score, singer, rid)
     return info
 
 
@@ -377,7 +439,7 @@ def _rec_dir(job_id: str, rid: str) -> Path:
     if not rid.replace("-", "").isalnum():
         raise HTTPException(404)
     d = jobs.job_dir(job_id) / "recordings"
-    if rid == share_video.KARAOKE_ID:  # the karaoke video itself
+    if rid.startswith(share_video.KARAOKE_ID):  # the karaoke video itself (karaoke, karaoke-M, karaoke-F)
         if not (jobs.job_dir(job_id) / "no_vocals.wav").exists():
             raise HTTPException(409, "Song is not processed yet")
         d.mkdir(exist_ok=True)
@@ -395,6 +457,15 @@ def make_video(job_id: str, rid: str, body: VideoRequest):
     p = jobs.job_dir(job_id) / "lyrics.json"
     lyr = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {"lines": []}
     singer = (body.singer or "").strip()[:60] or None
+    if rid.startswith(share_video.KARAOKE_ID) and rid != share_video.KARAOKE_ID:
+        you = rid.split("-")[1] if "-" in rid else ""
+        if you not in ("M", "F"):
+            raise HTTPException(404)
+        d = jobs.job_dir(job_id)
+        partner = _part_wav(job_id, "F" if you == "M" else "M")
+        media.run([config.FFMPEG, "-y", "-i", str(d / "no_vocals.wav"), "-i", str(partner), "-filter_complex",
+                   "[0:a][1:a]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[a]", "-map", "[a]",
+                   str(d / "recordings" / f"{rid}.wav")])
     return share_video.start(jobs.job_dir(job_id), rid, lyr, title=meta.get("title") or "Karaoke",
                              singer=singer, roman=body.roman, offset=max(-30.0, min(30.0, body.offset)))
 
@@ -412,7 +483,12 @@ def get_video(job_id: str, rid: str):
         raise HTTPException(404, "Video not made yet")
     title = (_job(job_id).get("title") or "karaoke")
     safe = "".join(c for c in title if c.isalnum() or c in " -_")[:60].strip() or "karaoke"
-    name = f"{safe} - karaoke.mp4" if rid == share_video.KARAOKE_ID else f"{safe} - my singing {rid}.mp4"
+    if rid == share_video.KARAOKE_ID:
+        name = f"{safe} - karaoke.mp4"
+    elif rid.startswith(share_video.KARAOKE_ID):
+        name = f"{safe} - duet karaoke ({'male' if rid.endswith('M') else 'female'} part).mp4"
+    else:
+        name = f"{safe} - my singing {rid}.mp4"
     return FileResponse(p, media_type="video/mp4", filename=name)
 
 

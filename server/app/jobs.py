@@ -9,7 +9,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import config, lyrics, media, pitch
+from . import config, duet, lyrics, media, pitch
 
 _lock = threading.Lock()
 # One song at a time: Demucs and Whisper each want the whole GPU/CPU.
@@ -59,11 +59,13 @@ def all_jobs() -> list[dict]:
 
 
 def create(*, source_url: str | None = None, upload_name: str | None = None,
-           language: str = "auto", title: str | None = None, artist: str | None = None) -> dict:
+           language: str = "auto", title: str | None = None, artist: str | None = None,
+           quality: str = "fast") -> dict:
     job_id = uuid.uuid4().hex[:12]
     meta = {
         "id": job_id, "status": "queued", "progress": "Waiting in queue",
         "source_url": source_url, "upload_name": upload_name, "language": language,
+        "quality": quality if quality in ("fast", "best") else "fast",
         "title": title or upload_name or source_url, "artist": artist,
         "created": time.time(), "updated": time.time(), "error": None,
     }
@@ -121,7 +123,7 @@ def _build(job_id: str) -> None:
         update(job_id, status="separating", progress="Removing vocals (the slow part)")
         wav = d / "audio.wav"
         media.extract_audio(src, wav)
-        vocals, music = media.separate(wav, d)
+        vocals, music = media.separate(wav, d, meta.get("quality"))
         t = lap("vocal_removal", t)
 
         # 3. video, lyrics and melody at the same time
@@ -136,7 +138,10 @@ def _build(job_id: str) -> None:
             lyr = lyrics.transcribe(str(vocals), meta.get("language") or "auto")
         (d / "lyrics.json").write_text(json.dumps(lyr, ensure_ascii=False), encoding="utf-8")
         update(job_id, progress="Finishing the karaoke video")
-        (d / "pitch.json").write_text(json.dumps(f_pitch.result()), encoding="utf-8")
+        ref = f_pitch.result()
+        (d / "pitch.json").write_text(json.dumps(ref), encoding="utf-8")
+        duet_info = duet.analyse(ref)
+        (d / "duet.json").write_text(json.dumps(duet_info), encoding="utf-8")
         f_video.result()
         lap("video_lyrics_melody", t)
 
@@ -144,7 +149,7 @@ def _build(job_id: str) -> None:
         timings["total"] = round(time.time() - t0, 1)
         update(job_id, status="done", progress="Ready", has_video=has_video,
                lyrics_source=lyr["source"], lyrics_language=lyr["language"],
-               lyrics_lines=len(lyr["lines"]), timings=timings)
+               lyrics_lines=len(lyr["lines"]), timings=timings, duet=duet_info["duet"])
     except Exception as e:  # noqa: BLE001 - report every failure to the app
         traceback.print_exc()
         update(job_id, status="error", progress="Failed", error=str(e)[:2000], timings=timings)
@@ -239,3 +244,45 @@ def save_lyrics(job_id: str, lyr: dict) -> None:
     update(job_id, lyrics_source=lyr["source"], lyrics_language=lyr["language"],
            lyrics_lines=len(lyr["lines"]),
            lyrics_version=int(time.time()))
+
+
+def duet_info(job_id: str) -> dict:
+    """duet.json, worked out (and saved) from pitch.json for songs made before duet mode existed."""
+    d = job_dir(job_id)
+    p = d / "duet.json"
+    if p.exists():
+        return json.loads(p.read_text())
+    pp = d / "pitch.json"
+    info = duet.analyse(json.loads(pp.read_text())) if pp.exists() else {"duet": False, "solo": "M", "segments": []}
+    p.write_text(json.dumps(info))
+    update(job_id, duet=info["duet"])
+    return info
+
+
+def add_score(job_id: str, score: float, singer: str | None, rec_id: str) -> None:
+    meta = load(job_id) or {}
+    scores = meta.get("scores", [])
+    scores.append({"score": round(score, 1), "singer": (singer or "").strip()[:40] or None,
+                   "rec": rec_id, "created": time.time()})
+    scores.sort(key=lambda s: s["score"], reverse=True)
+    update(job_id, scores=scores[:10], best_score=scores[0]["score"], best_singer=scores[0]["singer"])
+
+
+# ---------------------------------------------------------------- party queue (shared by PC and phones)
+
+def _queue_path() -> Path:
+    return config.DATA_DIR / "queue.json"
+
+
+def get_queue() -> list[dict]:
+    p = _queue_path()
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
+
+
+def set_queue(items: list[dict]) -> list[dict]:
+    clean = [{"id": str(i.get("id") or uuid.uuid4().hex[:8])[:16], "song_id": str(i["song_id"])[:16],
+              "singer": (str(i.get("singer") or "").strip()[:40] or None)}
+             for i in items if i.get("song_id")][:100]
+    with _lock:
+        _queue_path().write_text(json.dumps(clean, ensure_ascii=False), encoding="utf-8")
+    return clean

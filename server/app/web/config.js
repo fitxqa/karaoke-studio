@@ -20,7 +20,7 @@
   window.KS = KS;
 
   // Theme: orange (black + orange + white) is the default; light = white + orange; blue = classic.
-  document.documentElement.dataset.theme = get('theme', 'orange');
+  document.documentElement.dataset.theme = get('theme', 'light');
 
   if (!isApp) return;
   document.documentElement.classList.add('in-app');

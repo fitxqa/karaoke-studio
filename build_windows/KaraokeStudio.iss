@@ -1,6 +1,6 @@
 ; Inno Setup script: packs dist\KaraokeStudio (Python + AI tools + ffmpeg + app) into one Setup.exe
 #define AppName "Karaoke Studio"
-#define AppVer "1.0.0"
+#define AppVer "2.0.0"
 #ifndef SrcDir
   #define SrcDir "..\dist\KaraokeStudio"
 #endif

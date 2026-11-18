@@ -26,13 +26,13 @@ if (!m.includes('supports-screens')) {
 m = m.replace(/android:screenOrientation="[^"]*"/g, '');
 writeFileSync(manifestPath, m);
 
-// 2. colours: black bars, orange accent
+// 2. colours: orange bars, orange accent (white & orange design)
 const values = join(main, 'res', 'values');
 writeFileSync(join(values, 'colors.xml'), `<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="colorPrimary">#000000</color>
-    <color name="colorPrimaryDark">#000000</color>
-    <color name="colorAccent">#FF7A00</color>
+    <color name="colorPrimary">#FF6A00</color>
+    <color name="colorPrimaryDark">#E65F00</color>
+    <color name="colorAccent">#FF6A00</color>
 </resources>
 `);
 const stylesPath = join(values, 'styles.xml');
@@ -54,6 +54,6 @@ cpSync(join(here, '..', 'resources', 'res'), res, { recursive: true });
 const gradlePath = join(app, 'build.gradle');
 let g = readFileSync(gradlePath, 'utf8');
 const code = process.env.VERSION_CODE || '1';
-g = g.replace(/versionCode \d+/, `versionCode ${code}`).replace(/versionName "[^"]*"/, `versionName "1.4.${code}"`);
+g = g.replace(/versionCode \d+/, `versionCode ${code}`).replace(/versionName "[^"]*"/, `versionName "2.0.${code}"`);
 writeFileSync(gradlePath, g);
 console.log('Android project patched');

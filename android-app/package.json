@@ -1,6 +1,6 @@
 {
   "name": "karaoke-studio-android",
-  "version": "1.4.0",
+  "version": "2.0.0",
   "private": true,
   "description": "Karaoke Studio for Android phones and tablets (connects to Karaoke Studio on your PC)",
   "scripts": {

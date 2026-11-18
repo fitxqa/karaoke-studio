@@ -94,8 +94,8 @@ export class PitchTrack {
  * detects your pitch live, scores it, and produces a WAV for mixing.
  */
 export class SingSession {
-  constructor({ engine, reference, semitones, delayMs, onPoint }) {
-    Object.assign(this, { engine, reference, semitones, delay: delayMs / 1000, onPoint });
+  constructor({ engine, reference, semitones, delayMs, onPoint, filter = null }) {
+    Object.assign(this, { engine, reference, semitones, delay: delayMs / 1000, onPoint, filter });
     this.points = [];
     this.chunks = [];
     this.firstFrame = null;
@@ -151,6 +151,7 @@ export class SingSession {
   _score(t, user) {
     const ref = this.reference.at(t);
     if (ref == null) return;
+    if (this.filter && !this.filter(t)) return; // duet: not your line
     this.refFrames++;
     if (user == null) return;
     const d = Math.abs(pitchDiff(user, ref + this.semitones));

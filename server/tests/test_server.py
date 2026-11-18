@@ -120,9 +120,14 @@ def test_web_login_and_key_audio(tmp_path):
     assert c.post("/login", json={"key": "secret"}).status_code == 200  # sets cookie
     sid = c.post("/songs", json={"url": "https://youtu.be/x"}).json()["id"]  # cookie auth works
     _tone(jobs.job_dir(sid) / "no_vocals.wav", 330, 3)
+    _tone(jobs.job_dir(sid) / "vocals.wav", 220, 3)
     r = c.get(f"/songs/{sid}/audio/music.m4a?key=2")
     assert r.status_code == 200 and len(r.content) > 1000
-    assert (jobs.job_dir(sid) / "cache" / "music_k+2.m4a").exists()
+    assert (jobs.job_dir(sid) / "cache" / "music_k+2_s100.m4a").exists()
+    r = c.get(f"/songs/{sid}/audio/music.m4a?speed=0.8")  # practice speed: 3 s song -> ~3.75 s
+    assert r.status_code == 200
+    d = media.ffprobe_duration(jobs.job_dir(sid) / "cache" / "music_k+0_s80.m4a")
+    assert 3.5 < d < 4.0
     assert c.get(f"/songs/{sid}/audio/other.m4a").status_code == 404
     r = c.get(f"/songs/{sid}/audio/music.m4a?key=0", headers={"Range": "bytes=0-99"})
     assert r.status_code == 206 and len(r.content) == 100
@@ -183,3 +188,78 @@ def test_align_pasted_lyrics_keeps_timing_fixes_words():
     assert lines[1]["words"][1]["start"] == 7.0  # உன்னை took உண்ணை's time
     assert lines[1]["end"] <= 10.5  # not stretched to the 12 s cap
     assert frac >= 0.75
+
+
+def _duet_pitch():
+    """10 s: male (MIDI ~48) for 0-4 s, female (~62) 5-9 s."""
+    midi = []
+    for i in range(500):
+        t = i * 0.02
+        midi.append(48.0 + (i % 5) * 0.2 if t < 4 else (None if t < 5 else (62.0 + (i % 5) * 0.2 if t < 9 else None)))
+    return {"hop": 0.02, "midi": midi}
+
+
+def test_duet_analysis_and_parts(tmp_path):
+    from app import duet
+
+    info = duet.analyse(_duet_pitch())
+    assert info["duet"] is True
+    singers = [s["singer"] for s in info["segments"]]
+    assert singers == ["M", "F"]
+    lyr = {"lines": [
+        {"start": 0.2, "end": 3.8, "text": "a", "words": []},
+        {"start": 5.1, "end": 8.8, "text": "b", "words": []},
+        {"start": 5.1, "end": 8.8, "text": "c", "words": [], "singer": "B"},  # corrected by hand
+    ]}
+    assert duet.line_singer(lyr["lines"][0], info["segments"]) == "M"
+    assert duet.line_singer(lyr["lines"][1], info["segments"]) == "F"
+    assert duet.line_singer(lyr["lines"][2], info["segments"]) == "B"
+    segs = duet.effective_segments(info, lyr)
+    v = tmp_path / "vocals.wav"
+    sr = 44100
+    t = np.arange(sr * 10) / sr
+    sf.write(v, np.stack([0.3 * np.sin(2 * np.pi * 200 * t)] * 2, 1), sr)
+    out = duet.render_part(v, segs, "M", tmp_path / "m.wav")
+    y, _ = sf.read(out)
+    assert np.abs(y[int(2 * sr):int(2.1 * sr)]).max() > 0.1  # male part kept
+    assert np.abs(y[int(7 * sr):int(7.1 * sr)]).max() < 1e-6  # female part silenced
+
+    solo = duet.analyse({"hop": 0.02, "midi": [50.0] * 300})
+    assert solo["duet"] is False and solo["solo"] == "M"
+
+
+def test_duet_api_recording_scores_queue(tmp_path):
+    import json as _json
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    c = TestClient(app)
+    h = {"X-API-Key": "secret"}
+    sid = c.post("/songs", json={"url": "https://youtu.be/d", "quality": "best"}, headers=h).json()["id"]
+    assert jobs.load(sid)["quality"] == "best"
+    d = jobs.job_dir(sid)
+    _tone(d / "no_vocals.wav", 330, 10)
+    _tone(d / "vocals.wav", 220, 10)
+    (d / "pitch.json").write_text(_json.dumps(_duet_pitch()))
+    jobs.update(sid, duration=10)
+    dj = c.get(f"/songs/{sid}/duet", headers=h).json()
+    assert dj["duet"] is True and jobs.load(sid)["duet"] is True
+    assert c.get(f"/songs/{sid}/audio/female.m4a?key=1", headers=h).status_code == 200
+    # duet recording with an effect and the partner mixed in
+    _tone(tmp_path / "v.wav", 440, 3, sr=16000, stereo=False)
+    with open(tmp_path / "v.wav", "rb") as f:
+        r = c.post(f"/songs/{sid}/recordings", headers=h,
+                   data={"song_start": "0.5", "semitones": "0", "score": "88", "effect": "hall",
+                         "part": "M", "singer": "Muhsin"}, files={"voice": ("v.wav", f, "audio/wav")})
+    assert r.status_code == 200, r.text
+    meta = jobs.load(sid)
+    assert meta["best_score"] == 88 and meta["best_singer"] == "Muhsin"
+    # lines saved from Fix lyrics keep a hand-set singer
+    r = c.put(f"/songs/{sid}/lyrics/lines", headers=h, json={"lines": [{"start": 1, "text": "x y", "singer": "F"}]})
+    assert r.json()["lines"][0]["singer"] == "F"
+    # party queue
+    q = c.put("/queue", headers=h, json={"items": [{"song_id": sid, "singer": "Ann"}, {"song_id": ""}]}).json()
+    assert len(q) == 1 and q[0]["singer"] == "Ann"
+    assert c.get("/queue", headers=h).json()[0]["song_id"] == sid

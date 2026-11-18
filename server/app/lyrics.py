@@ -152,7 +152,7 @@ def build_lines(raw: list[dict], duration: float | None = None) -> list[dict]:
     (shifted lines), and spreads words again for lines whose text was changed."""
     items = sorted(
         ({"start": max(0.0, float(r["start"])), "text": re.sub(r"\s+", " ", str(r.get("text", ""))).strip(),
-          "words": r.get("words")} for r in raw),
+          "words": r.get("words"), "singer": r.get("singer")} for r in raw),
         key=lambda r: r["start"],
     )
     items = [r for r in items if r["text"]]
@@ -170,8 +170,11 @@ def build_lines(raw: list[dict], duration: float | None = None) -> list[dict]:
                 words.append({"start": round(a, 3), "end": round(b, 3), "text": str(w["text"])})
         if words:  # don't keep a line on screen long after its last word
             end = max(start + 0.3, min(end, words[-1]["end"] + 1.5))
-        out.append({"start": round(start, 3), "end": round(end, 3), "text": r["text"],
-                    "words": words or spread_words(r["text"], start, end)})
+        line = {"start": round(start, 3), "end": round(end, 3), "text": r["text"],
+                "words": words or spread_words(r["text"], start, end)}
+        if r.get("singer") in ("M", "F", "B"):  # duet part set by hand
+            line["singer"] = r["singer"]
+        out.append(line)
     return out
 
 

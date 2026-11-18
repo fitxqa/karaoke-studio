@@ -1,6 +1,8 @@
-// Audio engine: plays the karaoke track (and optional guide vocals) with Web Audio,
-// and keeps the muted <video> in sync. Web Audio gives a precise clock for lyrics,
-// scoring and recording alignment.
+// Audio engine: plays the karaoke music plus optional guide vocals and duet partner with
+// Web Audio, at any key and practice speed, and keeps the muted <video> in sync.
+// Web Audio gives a precise clock for lyrics, scoring and recording alignment.
+
+const LABELS = { music: 'karaoke music', vocals: 'guide vocals', male: 'male singer', female: 'female singer' };
 
 export class Engine {
   constructor(video) {
@@ -8,28 +10,33 @@ export class Engine {
     this.ctx = null;
     this.songId = null;
     this.key = 0;
-    this.guide = false;
-    this.offset = 0;     // song position when paused / when the current sources started
-    this.startAt = 0;    // ctx time the current sources started
+    this.speed = 1;          // practice speed (pitch kept)
+    this.offset = 0;         // song position when paused / when the current sources started
+    this.startAt = 0;        // ctx time the current sources started
     this.playing = false;
-    this.duration = 0;
-    this.music = null;   // AudioBuffer
-    this.vocals = null;  // AudioBuffer (guide)
+    this.duration = 0;       // song length in song seconds
+    this.tracks = { music: null, guide: null, partner: null };
+    this.want = { guide: 0, partner: null, partnerVol: 0.9 };
+    this.partnerVersion = 0; // bumped when duet parts are corrected
     this.sources = [];
     this.cache = new Map();
     this.onEnded = null;
-    this.onLoading = null; // (text|null)
+    this.onLoading = null;   // (text|null)
   }
+
+  get music() { return this.tracks.music; }
 
   ensureCtx() {
     if (this.ctx) return this.ctx;
     const ctx = new AudioContext({ latencyHint: 'interactive' });
     this.master = ctx.createGain();
-    this.musicGain = ctx.createGain();
-    this.vocalGain = ctx.createGain();
-    this.vocalGain.gain.value = 0;
-    this.musicGain.connect(this.master);
-    this.vocalGain.connect(this.master);
+    this.gains = {};
+    for (const k of ['music', 'guide', 'partner']) {
+      this.gains[k] = ctx.createGain();
+      this.gains[k].connect(this.master);
+    }
+    this.gains.guide.gain.value = this.want.guide;
+    this.gains.partner.gain.value = this.want.partnerVol;
     this.master.connect(ctx.destination);
     this.ctx = ctx;
     return ctx;
@@ -40,23 +47,26 @@ export class Engine {
     return c ? (c.outputLatency || 0) + (c.baseLatency || 0) : 0;
   }
 
-  /** Song position you are hearing right now (seconds). */
+  /** Song position you are hearing right now (seconds of the original song). */
   get time() {
     if (!this.playing) return this.offset;
-    return Math.min(this.duration, this.offset + Math.max(0, this.ctx.currentTime - this.startAt - this.outLatency));
+    return Math.min(this.duration, this.offset + Math.max(0, this.ctx.currentTime - this.startAt - this.outLatency) * this.speed);
   }
 
   /** Song position that was being heard at audio-clock time `ctxTime`. */
   songTimeAtCtx(ctxTime) {
-    return this.offset + (ctxTime - this.startAt - this.outLatency);
+    return this.offset + (ctxTime - this.startAt - this.outLatency) * this.speed;
   }
 
-  async _buffer(kind, key) {
-    const id = `${this.songId}:${kind}:${key}`;
+  async _buffer(kind) {
+    const pv = kind === 'male' || kind === 'female' ? this.partnerVersion : 0;
+    const id = `${this.songId}:${kind}:${this.key}:${this.speed}:${pv}`;
     if (this.cache.has(id)) return this.cache.get(id);
-    const label = kind === 'music' ? 'karaoke music' : 'guide vocals';
-    this.onLoading?.(key === 0 ? `Loading ${label}…` : `Changing key to ${key > 0 ? '+' : ''}${key}… (first time takes a few seconds)`);
-    const res = await fetch(`/songs/${this.songId}/audio/${kind}.m4a?key=${key}`);
+    const label = LABELS[kind] || kind;
+    const change = this.key !== 0 || this.speed !== 1;
+    this.onLoading?.(change ? `Preparing ${label} (key ${this.key > 0 ? '+' : ''}${this.key}, speed ${Math.round(this.speed * 100)}%)… first time takes a few seconds`
+      : `Loading ${label}…`);
+    const res = await fetch(`/songs/${this.songId}/audio/${kind}.m4a?key=${this.key}&speed=${this.speed}&v=${pv}`);
     if (!res.ok) throw new Error(`Could not load ${label} (${res.status})`);
     const total = +res.headers.get('content-length') || 0;
     const reader = res.body.getReader();
@@ -75,22 +85,27 @@ export class Engine {
     this.onLoading?.('Preparing audio…');
     const buf = await this.ensureCtx().decodeAudioData(bytes.buffer);
     this.cache.set(id, buf);
-    // keep memory in check: at most 4 decoded tracks
-    while (this.cache.size > 4) this.cache.delete(this.cache.keys().next().value);
+    while (this.cache.size > 6) this.cache.delete(this.cache.keys().next().value); // memory
     return buf;
   }
 
-  async load(songId, key = 0) {
-    this.songId = songId;
-    this.key = key;
+  async _reload() {
     this.ensureCtx();
     try {
-      this.music = await this._buffer('music', key);
-      this.vocals = this.guide ? await this._buffer('vocals', key) : null;
-      this.duration = this.music.duration;
+      this.tracks.music = await this._buffer('music');
+      this.tracks.guide = this.want.guide > 0 ? await this._buffer('vocals') : null;
+      this.tracks.partner = this.want.partner ? await this._buffer(this.want.partner) : null;
+      this.duration = this.tracks.music.duration * this.speed;
     } finally {
       this.onLoading?.(null);
     }
+  }
+
+  async load(songId, key = 0, speed = 1) {
+    this.songId = songId;
+    this.key = key;
+    this.speed = speed;
+    await this._reload();
   }
 
   _stopSources() {
@@ -102,16 +117,18 @@ export class Engine {
     this._stopSources();
     const ctx = this.ctx;
     this.startAt = ctx.currentTime + 0.05;
-    const mk = (buf, dest) => {
+    const at = this.offset / this.speed; // position inside the (time-stretched) buffers
+    let main = null;
+    for (const k of ['music', 'guide', 'partner']) {
+      const buf = this.tracks[k];
+      if (!buf) continue;
       const s = ctx.createBufferSource();
       s.buffer = buf;
-      s.connect(dest);
-      s.start(this.startAt, Math.min(this.offset, buf.duration));
+      s.connect(this.gains[k]);
+      s.start(this.startAt, Math.min(at, buf.duration));
       this.sources.push(s);
-      return s;
-    };
-    const main = mk(this.music, this.musicGain);
-    if (this.vocals) mk(this.vocals, this.vocalGain);
+      if (k === 'music') main = s;
+    }
     main.onended = () => {
       if (!this.playing) return;
       this.playing = false;
@@ -122,7 +139,7 @@ export class Engine {
   }
 
   async play() {
-    if (!this.music) return;
+    if (!this.tracks.music) return;
     await this.ensureCtx().resume();
     if (this.offset >= this.duration - 0.05) this.offset = 0;
     this._startSources();
@@ -144,30 +161,42 @@ export class Engine {
     this.syncVideo(true);
   }
 
-  async setKey(k) {
+  /** Reload tracks after a change, keeping the position and play state. */
+  async _change(apply) {
     const was = this.playing;
     const at = this.time;
     this.pause();
-    await this.load(this.songId, k);
-    this.offset = at;
+    apply();
+    await this._reload();
+    this.offset = Math.min(at, this.duration);
     if (was) await this.play();
   }
 
-  async setGuide(on) {
-    this.guide = on;
-    if (on && !this.vocals) {
-      const was = this.playing;
-      const at = this.time;
-      this.pause();
-      try {
-        this.vocals = await this._buffer('vocals', this.key);
-      } finally {
-        this.onLoading?.(null);
-      }
-      this.offset = at;
-      if (was) await this.play();
-    }
-    if (this.ctx) this.vocalGain.gain.setTargetAtTime(on ? 0.7 : 0, this.ctx.currentTime, 0.05);
+  setKey(k) { return this._change(() => { this.key = k; }); }
+  setSpeed(s) { return this._change(() => { this.speed = s; }); }
+
+  async setGuideVolume(v) {
+    this.want.guide = v;
+    if (this.ctx) this.gains.guide.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
+    if (v > 0 && !this.tracks.guide && this.songId) await this._change(() => {});
+  }
+
+  /** Duet partner: 'male' / 'female' singer track, or null for none. */
+  async setPartner(kind) {
+    this.want.partner = kind;
+    if (!this.songId) return;
+    await this._change(() => {});
+  }
+
+  setPartnerVolume(v) {
+    this.want.partnerVol = v;
+    if (this.ctx) this.gains.partner.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
+  }
+
+  /** Duet parts were corrected: fetch the partner track again. */
+  async refreshPartner() {
+    this.partnerVersion++;
+    if (this.want.partner && this.songId) await this._change(() => {});
   }
 
   /** Called every animation frame. */
@@ -176,11 +205,12 @@ export class Engine {
     if (!v || v.readyState < 2) return;
     const t = this.time;
     const drift = v.currentTime - t;
+    const base = this.speed;
     if (this.playing) {
       if (v.paused) v.play().catch(() => {});
-      if (Math.abs(drift) > 0.3 || force) { v.currentTime = t; v.playbackRate = 1; }
-      else if (Math.abs(drift) > 0.04) v.playbackRate = drift > 0 ? 0.96 : 1.04;
-      else v.playbackRate = 1;
+      if (Math.abs(drift) > 0.3 || force) { v.currentTime = t; v.playbackRate = base; }
+      else if (Math.abs(drift) > 0.04) v.playbackRate = base * (drift > 0 ? 0.96 : 1.04);
+      else v.playbackRate = base;
     } else {
       if (!v.paused) v.pause();
       if (Math.abs(drift) > 0.08 || force) v.currentTime = t;
@@ -189,10 +219,8 @@ export class Engine {
 
   stop() {
     this.pause();
-    this.music = null;
-    this.vocals = null;
-    this.guide = false;
-    if (this.vocalGain) this.vocalGain.gain.value = 0;
+    this.tracks = { music: null, guide: null, partner: null };
+    this.want.partner = null;
     this.video.removeAttribute('src');
     this.video.load();
   }
