@@ -20,11 +20,12 @@ jobs:
           path: dist/KaraokeStudio-Setup.exe
           compression-level: 0
       - name: Attach to the GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: windows-v2.0.0
+          target_commitish: ${{ github.sha }}
           files: dist/KaraokeStudio-Setup.exe
-          name: Karaoke Studio ${{ github.ref_name }} (Windows installer)
+          name: Karaoke Studio 2.0 (Windows installer)
           body: One-file Windows installer — includes Python and everything needed. Download KaraokeStudio-Setup.exe and double-click.
     permissions:
       contents: write
