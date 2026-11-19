@@ -263,3 +263,16 @@ def test_duet_api_recording_scores_queue(tmp_path):
     q = c.put("/queue", headers=h, json={"items": [{"song_id": sid, "singer": "Ann"}, {"song_id": ""}]}).json()
     assert len(q) == 1 and q[0]["singer"] == "Ann"
     assert c.get("/queue", headers=h).json()[0]["song_id"] == sid
+
+
+def test_import_old_songs(tmp_path, monkeypatch):
+    from app import migrate
+    from app.config import JOBS_DIR
+    old = tmp_path / "karaoke-studio" / "server" / "data" / "jobs" / "oldsong1234"
+    old.mkdir(parents=True)
+    (old / "meta.json").write_text('{"id": "oldsong1234", "title": "Old", "status": "ready"}')
+    monkeypatch.setattr(migrate.Path, "home", staticmethod(lambda: tmp_path))
+    assert migrate.import_old_songs() == 1
+    assert (JOBS_DIR / "oldsong1234" / "meta.json").exists()
+    assert (old / "meta.json").exists()          # original kept
+    assert migrate.import_old_songs() == 0       # not copied twice

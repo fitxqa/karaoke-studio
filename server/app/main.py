@@ -24,11 +24,18 @@ from . import config, duet, jobs, lyrics, media, share_video
 
 @asynccontextmanager
 async def lifespan(_app):
+    try:
+        from .migrate import import_old_songs
+        n = import_old_songs()
+        if n:
+            print(f"  Brought {n} song(s) from your older Karaoke Studio into the library.")
+    except Exception as e:  # never stop the app over this
+        print("  Could not look for old songs:", e)
     jobs.resume_unfinished()
     yield
 
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 app = FastAPI(title="Karaoke Studio", version=APP_VERSION, lifespan=lifespan)
 
 

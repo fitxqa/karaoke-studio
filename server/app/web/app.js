@@ -1,7 +1,7 @@
 import { Engine } from './engine.js?v=2.0.0';
 import { PitchTrack, SingSession, grade, pitchDiff } from './pitch.js?v=2.0.0';
 
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.0.1';
 const KS = window.KS || { isApp: false, U: (p) => p, plugins: {} };
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
